@@ -58,7 +58,6 @@ fn main() {
         n = n + 1;
         for event in event_pump.poll_iter() {
             text_area.consume_event(&event);
-            dbg!(&event);
             match event {
                 sdl2::event::Event::KeyDown {
                     keycode: Some(Keycode::Q),
