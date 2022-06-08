@@ -1,5 +1,3 @@
-use std::str::Chars;
-
 use sdl2::{
     event::Event, keyboard::Keycode, pixels::Color, rect::Rect, render::Canvas, ttf::Font,
     video::Window,
@@ -32,10 +30,49 @@ pub struct TextArea {
     pub viewport: Viewport,
 }
 
+pub trait Panel: Render + EventConsumer {}
+
 pub trait Render {
     fn render(&mut self, atlas: &mut FontAtlas2, font: &Font, canvas: &mut Canvas<Window>);
 }
 
+pub trait EventConsumer {
+    fn consume_event(&mut self, event: &Event);
+}
+
+impl EventConsumer for TextArea {
+    fn consume_event(&mut self, event: &Event) {
+        match event {
+            sdl2::event::Event::TextInput { text, .. } => self.insert_char(dbg!(text.to_owned())),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Return),
+                ..
+            } => self.insert_char('\n'.to_string()),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Backspace),
+                ..
+            } => self.delete_char(),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Right),
+                ..
+            } => self.next_char(),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Left),
+                ..
+            } => self.prev_char(),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Down),
+                ..
+            } => self.next_line(),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Up),
+                ..
+            } => self.prev_line(),
+            _ => (),
+        };
+    }
+}
+impl Panel for TextArea {}
 impl Render for TextArea {
     fn render(&mut self, atlas: &mut FontAtlas2, font: &Font, canvas: &mut Canvas<Window>) {
         let mut x = 0;
@@ -44,14 +81,13 @@ impl Render for TextArea {
         let fg = Color::RGBA(0, 0, 0, 0);
         let bg = Color::RGBA(255, 255, 255, 255);
 
-        let mut col = 0;
         let mut h = 0;
 
         for (lineno, tline) in self.text.split_inclusive('\n').enumerate() {
-            col = 0;
             if !self.viewport.contains(lineno) {
                 continue;
             }
+            let mut col = 0;
 
             for c in tline.chars() {
                 let active_colors = if lineno == self.cursor_pos.line && col == self.cursor_pos.col
@@ -92,80 +128,6 @@ impl TextArea {
         }
     }
 
-    pub fn consume_event(&mut self, event: &Event) {
-        match event {
-            sdl2::event::Event::TextInput { text, .. } => self.insert_char(dbg!(text.to_owned())),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Return),
-                ..
-            } => self.insert_char('\n'.to_string()),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Backspace),
-                ..
-            } => self.delete_char(),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Right),
-                ..
-            } => self.next_char(),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Left),
-                ..
-            } => self.prev_char(),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Down),
-                ..
-            } => self.next_line(),
-            sdl2::event::Event::KeyDown {
-                keycode: Some(Keycode::Up),
-                ..
-            } => self.prev_line(),
-            _ => (),
-        };
-    }
-
-    fn next_char(&mut self) {
-        self.goto(self.cursor_pos.line, self.cursor_pos.col + 1);
-    }
-
-    fn prev_char(&mut self) {
-        let f_c = if self.cursor_pos.col == 0 {
-            0
-        } else {
-            self.cursor_pos.col - 1
-        };
-        self.goto(self.cursor_pos.line, f_c);
-    }
-
-    fn goto(&mut self, new_l: usize, new_c: usize) {
-        dbg!("{} {}", new_l, new_c);
-
-        let lines = self.text.split_inclusive('\n').collect::<Vec<&str>>();
-        self.cursor_pos.line = new_l.clamp(0, lines.len() - 1);
-
-        // Do this after so you dont overflow the usize
-        let line = lines[self.cursor_pos.line];
-        dbg!(new_c, 1, line.len());
-        self.cursor_pos.col = new_c.clamp(0, line.len() - 1);
-
-        dbg!(&self.cursor_pos);
-    }
-    fn next_line(&mut self) {
-        self.goto(self.cursor_pos.line + 1, self.cursor_pos.col);
-    }
-
-    fn prev_line(&mut self) {
-        let f_l = if self.cursor_pos.line == 0 {
-            0
-        } else {
-            self.cursor_pos.line - 1
-        };
-        self.goto(f_l, self.cursor_pos.col);
-    }
-
-    fn home(&mut self) {
-        self.goto(self.cursor_pos.line, 0);
-    }
-
     fn translate_cp_to_idx(&self, cp: &CursorPosition) -> usize {
         let mut accum = 0;
 
@@ -193,6 +155,60 @@ impl TextArea {
             accum += l.chars().count();
         }
         CursorPosition { col, line }
+    }
+
+    fn next_char(&mut self) {
+        self.goto(self.cursor_pos.line, self.cursor_pos.col + 1);
+    }
+
+    fn prev_char(&mut self) {
+        // we need to do this because of overflow
+        let f_c = if self.cursor_pos.col == 0 {
+            0
+        } else {
+            self.cursor_pos.col - 1
+        };
+        self.goto(self.cursor_pos.line, f_c);
+    }
+
+    fn goto(&mut self, new_l: usize, new_c: usize) {
+        dbg!("{} {}", new_l, new_c);
+
+        let lines = self.text.split_inclusive('\n').collect::<Vec<&str>>();
+        self.cursor_pos.line = new_l.clamp(0, lines.len() - 1);
+
+        // Do this after so you dont overflow the usize
+        let line = lines[self.cursor_pos.line];
+        dbg!(new_c, 1, line.len());
+        self.cursor_pos.col = new_c.clamp(0, line.len() - 1);
+
+        dbg!(&self.cursor_pos);
+        let vp_v_reach = self.viewport.cur_line + self.viewport.lines;
+
+        if self.cursor_pos.line >= vp_v_reach - 3 && vp_v_reach < self.text.lines().count() {
+            self.viewport.cur_line += 10;
+        }
+
+        if self.cursor_pos.line <= self.viewport.cur_line + 3 && self.viewport.cur_line > 0 {
+            self.viewport.cur_line -= std::cmp::min(self.viewport.cur_line, 10);
+        }
+    }
+    fn next_line(&mut self) {
+        self.goto(self.cursor_pos.line + 1, self.cursor_pos.col);
+    }
+
+    fn prev_line(&mut self) {
+        // we need to do this because of overflow
+        let f_l = if self.cursor_pos.line == 0 {
+            0
+        } else {
+            self.cursor_pos.line - 1
+        };
+        self.goto(f_l, self.cursor_pos.col);
+    }
+
+    fn home(&mut self) {
+        self.goto(self.cursor_pos.line, 0);
     }
 
     pub fn insert_char(&mut self, ch: String) {

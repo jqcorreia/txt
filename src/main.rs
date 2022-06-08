@@ -4,12 +4,13 @@ pub mod atlas;
 pub mod text;
 
 use atlas::{FontAtlas, FontAtlas2, TextureInfo};
+use sdl2::pixels::PixelFormatEnum;
 use sdl2::{
     keyboard::Keycode, pixels::Color, rect::Rect, render::Canvas, ttf::Font, video::Window,
 };
-use text::TextArea;
-use text::Render;
 use std::{collections::HashMap, fs, time::Instant};
+use text::TextArea;
+use text::{EventConsumer, Panel, Render};
 
 fn draw_fps(canvas: &mut Canvas<Window>, font: &Font, fps: u32) {
     let x = canvas.viewport().width() - 200;
@@ -52,16 +53,22 @@ fn main() {
     let tc2 = canvas.texture_creator();
     let mut cur_time = Instant::now();
     let mut atlas2 = FontAtlas2::new(&ttf, &tc2);
-    let mut text_area = TextArea::new(text);
+    let text_area = TextArea::new(text);
+
+    let mut components: Vec<Box<dyn Panel>> = Vec::new();
+    components.push(Box::new(text_area));
 
     while running {
         n = n + 1;
         for event in event_pump.poll_iter() {
-            text_area.consume_event(&event);
+            for comp in components.iter_mut() {
+                comp.consume_event(&event);
+            }
+            // text_area.consume_event(&event);
             match event {
                 sdl2::event::Event::KeyDown {
                     keycode: Some(Keycode::Q),
-                    keymod: sdl2::keyboard::Mod::LCTRLMOD, 
+                    keymod: sdl2::keyboard::Mod::LCTRLMOD,
                     ..
                 } => running = false,
                 sdl2::event::Event::Quit { .. } => running = false,
@@ -71,11 +78,28 @@ fn main() {
         let fps = (1_000_000_000 / (&cur_time.elapsed().as_nanos())) as u32;
         cur_time = Instant::now();
 
+
         canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
         canvas.clear();
-        text_area.render(&mut atlas2, &font, &mut canvas);
-        // canvas.copy(s, None, Some(Rect::new(100, 100, 100, 100)));
-        // draw_text(text.to_string(), &mut canvas, &font, &cursor_pos, &mut atlas2);
+
+        for comp in components.iter_mut() {
+            let mut tex = tc2
+                .create_texture_target(
+                    PixelFormatEnum::RGB24,
+                    canvas.window().size().0,
+                    canvas.window().size().1,
+                )
+                .unwrap();
+
+            canvas
+                .with_texture_canvas(&mut tex, |c| {
+                    comp.render(&mut atlas2, &font, c);
+                })
+                .unwrap();
+            canvas.copy(&tex, None, None).unwrap();
+        }
+
+        // Draw the FPS counter directly into the window canvas
         draw_fps(&mut canvas, &font, fps);
         canvas.present();
     }
