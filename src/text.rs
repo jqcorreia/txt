@@ -1,9 +1,19 @@
+use std::fmt::Debug;
+
 use sdl2::{
-    event::Event, keyboard::Keycode, pixels::Color, rect::Rect, render::Canvas, ttf::Font,
+    event::Event,
+    keyboard::Keycode,
+    pixels::{Color, PixelFormatEnum},
+    rect::Rect,
+    render::{Canvas, Texture},
+    ttf::Font,
     video::Window,
 };
 
-use crate::atlas::FontAtlas2;
+use crate::{
+    atlas::FontAtlas2,
+    panels::{EventConsumer, Focusable, Panel, Render},
+};
 
 #[derive(Debug)]
 pub struct CursorPosition {
@@ -12,10 +22,10 @@ pub struct CursorPosition {
 }
 
 pub struct Viewport {
-    pub lines: usize,
     pub cols: usize,
-    pub cur_line: usize,
     pub cur_col: usize,
+    pub cur_line: usize,
+    pub lines: usize,
 }
 
 impl Viewport {
@@ -25,23 +35,30 @@ impl Viewport {
 }
 
 pub struct TextArea {
-    pub text: String,
     pub cursor_pos: CursorPosition,
+    pub text: String,
     pub viewport: Viewport,
+    pub focused: bool,
+    pub filepath: String,
 }
 
-pub trait Panel: Render + EventConsumer {}
-
-pub trait Render {
-    fn render(&mut self, atlas: &mut FontAtlas2, font: &Font, canvas: &mut Canvas<Window>);
-}
-
-pub trait EventConsumer {
-    fn consume_event(&mut self, event: &Event);
+impl Focusable for TextArea {
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn focus(&mut self) {
+        self.focused = true;
+    }
+    fn unfocus(&mut self) {
+        self.focused = false;
+    }
 }
 
 impl EventConsumer for TextArea {
     fn consume_event(&mut self, event: &Event) {
+        if !self.is_focused() {
+            return;
+        }
         match event {
             sdl2::event::Event::TextInput { text, .. } => self.insert_char(dbg!(text.to_owned())),
             sdl2::event::Event::KeyDown {
@@ -49,9 +66,19 @@ impl EventConsumer for TextArea {
                 ..
             } => self.insert_char('\n'.to_string()),
             sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::S),
+                keymod: sdl2::keyboard::Mod::LCTRLMOD,
+                ..
+            } => self.save(),
+            sdl2::event::Event::KeyDown {
                 keycode: Some(Keycode::Backspace),
                 ..
             } => self.delete_char(),
+            sdl2::event::Event::KeyDown {
+                keycode: Some(Keycode::Left),
+                keymod: sdl2::keyboard::Mod::LCTRLMOD,
+                ..
+            } => self.home(),
             sdl2::event::Event::KeyDown {
                 keycode: Some(Keycode::Right),
                 ..
@@ -73,13 +100,28 @@ impl EventConsumer for TextArea {
     }
 }
 impl Panel for TextArea {}
+
 impl Render for TextArea {
-    fn render(&mut self, atlas: &mut FontAtlas2, font: &Font, canvas: &mut Canvas<Window>) {
+    fn id(&self) -> String {
+        format!("{}", self.filepath)
+    }
+
+    fn render(
+        &mut self,
+        atlas: &mut FontAtlas2,
+        font: &Font,
+        canvas: &mut Canvas<Window>,
+        rect: Rect,
+    ) {
+        // dbg!(&self.filepath, &self.text);
+        let tc = canvas.texture_creator();
         let mut x = 0;
         let mut y = 10;
 
-        let fg = Color::RGBA(0, 0, 0, 0);
-        let bg = Color::RGBA(255, 255, 255, 255);
+        canvas.set_draw_color(Color::RGBA(50, 48, 47, 255));
+        canvas.clear();
+
+        let fg = Color::RGBA(253, 244, 193, 255);
 
         let mut h = 0;
 
@@ -90,20 +132,44 @@ impl Render for TextArea {
             let mut col = 0;
 
             for c in tline.chars() {
-                let active_colors = if lineno == self.cursor_pos.line && col == self.cursor_pos.col
-                {
-                    (fg, bg)
-                } else {
-                    (bg, fg)
+                let to_print = match c {
+                    '\n' => ' ',
+                    _ => c,
                 };
-                let to_print = if c == '\n' { ' ' } else { c };
-
-                let tex = atlas.draw_char(font, to_print, active_colors.0, active_colors.1);
+                let is_cursor = lineno == self.cursor_pos.line && col == self.cursor_pos.col;
+                let tex = atlas.draw_char(
+                    font,
+                    to_print,
+                    if is_cursor {
+                        Color::RGBA(0, 0, 0, 0)
+                    } else {
+                        fg
+                    },
+                );
                 let q = tex.query();
+                let mut cursor: Texture;
+
+                let tex_final = if is_cursor {
+                    cursor = tc
+                        .create_texture_target(PixelFormatEnum::RGBA8888, q.width, q.height)
+                        .unwrap();
+                    canvas
+                        .with_texture_canvas(&mut cursor, |c| {
+                            c.set_draw_color(Color::RGBA(255, 255, 255, 255));
+                            c.clear();
+                            c.copy(tex, None, None).unwrap();
+                        })
+                        .unwrap();
+                    &cursor
+                } else {
+                    tex
+                };
+
+                let q = tex_final.query();
                 let w = q.width;
                 h = q.height;
                 canvas
-                    .copy(tex, None, Some(Rect::new(x as i32, y as i32, w, h)))
+                    .copy(&tex_final, None, Some(Rect::new(x as i32, y as i32, w, h)))
                     .unwrap();
                 x += w;
                 col += 1;
@@ -111,13 +177,30 @@ impl Render for TextArea {
             y += h;
             x = 0;
         }
+
+        let info = format!("{}:{}", self.cursor_pos.line + 1, self.cursor_pos.col + 1);
+        let info = atlas.draw_string(info, canvas, font, fg);
+        canvas
+            .copy(
+                &info,
+                None,
+                Some(Rect::new(
+                    0,
+                    (rect.height() - (info.query().height + 1)) as i32,
+                    info.query().width,
+                    info.query().height,
+                )),
+            )
+            .unwrap();
     }
 }
 
 impl TextArea {
-    pub fn new(text: String) -> Self {
+    pub fn new(path: String) -> Self {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| String::from(" "));
         TextArea {
             text,
+            filepath: path,
             cursor_pos: CursorPosition { line: 0, col: 0 },
             viewport: Viewport {
                 cur_line: 0,
@@ -125,6 +208,7 @@ impl TextArea {
                 lines: 50,
                 cols: 80,
             },
+            focused: false,
         }
     }
 
@@ -147,7 +231,7 @@ impl TextArea {
         let mut line = 0;
 
         for (i, l) in self.text.split_inclusive('\n').enumerate() {
-            if accum + l.len() > idx {
+            if accum + l.char_indices().count() > idx {
                 col = idx - accum;
                 line = i;
                 return CursorPosition { col, line };
@@ -180,7 +264,7 @@ impl TextArea {
         // Do this after so you dont overflow the usize
         let line = lines[self.cursor_pos.line];
         dbg!(new_c, 1, line.len());
-        self.cursor_pos.col = new_c.clamp(0, line.len() - 1);
+        self.cursor_pos.col = new_c.clamp(0, line.char_indices().count() - 1);
 
         dbg!(&self.cursor_pos);
         let vp_v_reach = self.viewport.cur_line + self.viewport.lines;
@@ -235,5 +319,9 @@ impl TextArea {
         dbg!(self.text.remove(char_boundary.0));
         let cp = self.translate_idx_to_cp(idx - 1);
         self.goto(cp.line, cp.col);
+    }
+
+    pub fn save(&mut self) {
+        std::fs::write(self.filepath.clone(), self.text.clone()).unwrap();
     }
 }
